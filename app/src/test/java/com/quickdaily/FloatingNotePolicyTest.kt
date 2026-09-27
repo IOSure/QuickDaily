@@ -141,6 +141,16 @@ class FloatingNotePolicyTest {
         assertEquals(97, FloatingNoteAppearance.DEFAULT_OPACITY_PERCENT)
     }
 
+    @Test
+    fun closeLikeReasonsCollapseIntoBubbleButExplicitTransitionsDoNot() {
+        assertTrue(FloatingNoteBubblePolicy.shouldShowBubble("close"))
+        assertTrue(FloatingNoteBubblePolicy.shouldShowBubble("back"))
+        assertTrue(FloatingNoteBubblePolicy.shouldShowBubble("saved_empty"))
+        assertTrue(FloatingNoteBubblePolicy.shouldShowBubble("saved"))
+        assertFalse(FloatingNoteBubblePolicy.shouldShowBubble("fullscreen"))
+        assertFalse(FloatingNoteBubblePolicy.shouldShowBubble("notification"))
+    }
+
 
     @Test
     fun editorLifecycleRefreshOnlyRunsWhenTheActivityStops() {

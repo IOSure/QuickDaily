@@ -115,6 +115,12 @@ internal object FloatingNotePolicy {
         ?: if (rememberTarget) rememberedTargetPath else null
 }
 
+internal object FloatingNoteBubblePolicy {
+    private val bubbleReasons = setOf("back", "close", "user", "save_empty", "saved_empty", "saved")
+
+    fun shouldShowBubble(reason: String): Boolean = reason in bubbleReasons
+}
+
 internal object FloatingNoteEntryPolicy {
     const val PREF_SYSTEM_SIDEBAR_SUPPORT = "system_sidebar_support"
     const val DEFAULT_SYSTEM_SIDEBAR_SUPPORT = false
@@ -187,6 +193,15 @@ class FloatingNoteEditorState(context: Context) {
 
     fun hasContent(): Boolean =
         hasRealContent(text) || selectedImages.isNotEmpty() || pendingAttachments.isNotEmpty() || invalidAttachments.isNotEmpty()
+
+    fun clearContent() {
+        text = ""
+        selectedImages.clear()
+        pendingAttachments.clear()
+        invalidAttachments.clear()
+        selectionStart = 0
+        selectionEnd = 0
+    }
 }
 
 internal object FloatingNoteDraftTargetPolicy {

@@ -8,13 +8,18 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.SystemClock
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -39,6 +44,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 internal enum class FloatingNoteRecordingState {
@@ -69,14 +75,21 @@ internal object FloatingNoteRecordingPolicy {
 class FloatingNoteService : LifecycleService() {
     private lateinit var windowManager: WindowManager
     private var overlayView: FloatingNoteComposeView? = null
+    private var bubbleView: View? = null
     private lateinit var state: FloatingNoteEditorState
     private lateinit var viewTreeOwner: FloatingNoteViewTreeOwner
     private val saveUseCase by lazy { FloatingNoteSaveUseCase(applicationContext) }
     private var targetOptions by mutableStateOf<List<FloatingNoteTargetOption>>(emptyList())
     private var windowParams: WindowManager.LayoutParams? = null
+    private var bubbleParams: WindowManager.LayoutParams? = null
     private var windowDragOrigin: FloatingNotePosition? = null
     private var windowDragX = 0f
     private var windowDragY = 0f
+    private var bubbleDownRawX = 0f
+    private var bubbleDownRawY = 0f
+    private var bubbleStartX = 0
+    private var bubbleStartY = 0
+    private var bubbleMoved = false
     private var recorder: MediaRecorder? = null
     private var recordingFile: File? = null
     private var activeRequestId: String = "service"
@@ -110,7 +123,7 @@ class FloatingNoteService : LifecycleService() {
         super.onStartCommand(intent, flags, startId)
         FloatingNoteTiming.mark("service_start", "action=${intent?.action ?: "none"}")
         when (intent?.action) {
-            ACTION_HIDE -> requestClose(intent.getStringExtra(EXTRA_REASON) ?: "user")
+            ACTION_HIDE -> dismissFloatingUi(intent.getStringExtra(EXTRA_REASON) ?: "user")
             ACTION_START_RECORDING -> startRecording()
             ACTION_REFRESH -> {
                 val previousTarget = intent.getStringExtra(EXTRA_PREVIOUS_TARGET_PATH)
@@ -162,6 +175,14 @@ class FloatingNoteService : LifecycleService() {
         return START_NOT_STICKY
     }
 
+    private fun dismissFloatingUi(reason: String) {
+        if (overlayView != null) {
+            requestClose(reason)
+            return
+        }
+        hideBubble(reason)
+    }
+
     private fun ensureOverlay() {
         if (overlayView != null) {
             FloatingNoteLaunchGate.release()
@@ -173,6 +194,7 @@ class FloatingNoteService : LifecycleService() {
 
         try {
             closingOverlay = false
+            removeBubble(updateNotification = false)
             targetOptions = FloatingNoteTargetStore.options(this, state.targetRelativePath)
             val completionPrefs = getSharedPreferences("QuickDaily", MODE_PRIVATE)
             // Launcher starts this service from a user-visible Activity. Starting the
@@ -357,6 +379,7 @@ class FloatingNoteService : LifecycleService() {
             FloatingNoteLaunchGate.release()
             FloatingNoteTiming.mark("window_add_end")
             BetaLogger.log("FloatingNote/Window", "show type=TYPE_APPLICATION_OVERLAY width=$width height=$height")
+            updateForegroundNotification()
             FloatingNoteTiming.mark("overlay_ready")
             FloatingNoteHandoff.notifyReady(activeRequestId)
         } catch (error: Throwable) {
@@ -430,6 +453,7 @@ class FloatingNoteService : LifecycleService() {
                     FloatingNoteSaveResult.Saved,
                     FloatingNoteSaveResult.NoContent -> {
                         FloatingNoteDraftStore.clear(this@FloatingNoteService, state.targetRelativePath)
+                        state.clearContent()
                         completeClose(reason, openHomeAfterClose)
                     }
                     is FloatingNoteSaveResult.Failed -> {
@@ -441,7 +465,12 @@ class FloatingNoteService : LifecycleService() {
         }
     }
     private fun completeClose(reason: String, openHomeAfterClose: Boolean) {
-        if (openHomeAfterClose) openHome() else hideOverlay(reason, persistDraft = false)
+        if (openHomeAfterClose) openHome()
+        else hideOverlay(
+            reason,
+            persistDraft = false,
+            showBubbleAfterHide = FloatingNoteBubblePolicy.shouldShowBubble(reason),
+        )
     }
     private fun saveDraft() {
         FloatingNoteTiming.mark("save_requested")
@@ -474,13 +503,15 @@ class FloatingNoteService : LifecycleService() {
                 when (result) {
                     FloatingNoteSaveResult.Saved -> {
                         FloatingNoteDraftStore.clear(this@FloatingNoteService, state.targetRelativePath)
+                        state.clearContent()
                         if (!FloatingNoteEntryPolicy.isSystemSidebarSupportEnabled(this@FloatingNoteService)) {
                             Toast.makeText(this@FloatingNoteService, "已保存", Toast.LENGTH_SHORT).show()
                         }
-                        hideOverlay("saved", persistDraft = false)
+                        completeClose("saved", openHomeAfterClose = false)
                     }
                     FloatingNoteSaveResult.NoContent -> {
                         FloatingNoteDraftStore.clear(this@FloatingNoteService, state.targetRelativePath)
+                        state.clearContent()
                         completeClose("saved_empty", state.returnToHomeAfterClose)
                     }
                     is FloatingNoteSaveResult.Failed -> {
@@ -503,7 +534,7 @@ class FloatingNoteService : LifecycleService() {
             // TYPE_APPLICATION_OVERLAY can remain above system pickers and
             // permission surfaces. Remove it before launching the short-lived
             // Activity; the picker restores it on success or cancellation.
-            hideOverlay("${mode}_picker", persistDraft = true)
+            hideOverlay("${mode}_picker", persistDraft = true, showBubbleAfterHide = false)
         }
         startActivity(Intent(this, FloatingNotePickerActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -681,7 +712,7 @@ class FloatingNoteService : LifecycleService() {
 
     private fun openHome() {
         startActivity(MainActivity.editorIntent(this, state.targetRelativePath))
-        hideOverlay("home", persistDraft = false)
+        hideOverlay("home", persistDraft = false, showBubbleAfterHide = false)
     }
 
     private fun openFullScreen() {
@@ -703,9 +734,13 @@ class FloatingNoteService : LifecycleService() {
                 title = title,
             )
         )
-        hideOverlay("fullscreen", persistDraft = false)
+        hideOverlay("fullscreen", persistDraft = false, showBubbleAfterHide = false)
     }
-    private fun hideOverlay(reason: String, persistDraft: Boolean = true) {
+    private fun hideOverlay(
+        reason: String,
+        persistDraft: Boolean = true,
+        showBubbleAfterHide: Boolean = false,
+    ) {
         if (closingOverlay) {
             FloatingNoteTiming.mark("hide_ignored", "reason=$reason alreadyClosing=true")
             return
@@ -718,6 +753,7 @@ class FloatingNoteService : LifecycleService() {
         if (persistDraft) {
             FloatingNoteDraftStore.persistOrClear(this, state)
         }
+        val anchorPosition = windowParams?.let { FloatingNotePosition(it.x, it.y) }
         overlayView?.let { view ->
             FloatingNoteTiming.mark(
                 "ime_hide_request",
@@ -744,9 +780,179 @@ class FloatingNoteService : LifecycleService() {
         windowParams = null
         isWindowShowing = false
         FloatingNoteLaunchGate.release()
+        if (showBubbleAfterHide && showBubble(anchorPosition)) {
+            closingOverlay = false
+            FloatingNoteTiming.mark("hide_end", "reason=$reason mode=bubble")
+            return
+        }
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         FloatingNoteTiming.mark("hide_end", "reason=$reason")
+    }
+
+    private fun showBubble(anchorPosition: FloatingNotePosition? = null): Boolean {
+        if (bubbleView != null) {
+            updateForegroundNotification()
+            return true
+        }
+        val dm = resources.displayMetrics
+        val size = dp(56)
+        val maxX = (dm.widthPixels - size).coerceAtLeast(0)
+        val maxY = (dm.heightPixels - size).coerceAtLeast(0)
+        val position = loadBubblePosition(anchorPosition, maxX, maxY)
+        val params = WindowManager.LayoutParams(
+            size,
+            size,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = position.x
+            y = position.y
+            alpha = FloatingNoteAppearance.alpha(this@FloatingNoteService)
+            windowAnimations = 0
+        }
+        val dragThreshold = dp(6)
+        val view = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#EE1B1B2B"))
+                setStroke(dp(1), Color.parseColor("#33FFFFFF"))
+            }
+            elevation = dp(8).toFloat()
+            isClickable = true
+            isFocusable = false
+            contentDescription = "QuickDaily 悬浮球"
+            addView(
+                ImageView(context).apply {
+                    setImageResource(R.drawable.ic_edit_white)
+                    imageTintList = android.content.res.ColorStateList.valueOf(Color.WHITE)
+                    scaleType = ImageView.ScaleType.CENTER_INSIDE
+                },
+                FrameLayout.LayoutParams(dp(24), dp(24), Gravity.CENTER),
+            )
+            setOnClickListener { openOverlayFromBubble() }
+            setOnTouchListener { bubble, event ->
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        bubbleDownRawX = event.rawX
+                        bubbleDownRawY = event.rawY
+                        bubbleStartX = params.x
+                        bubbleStartY = params.y
+                        bubbleMoved = false
+                        true
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = (event.rawX - bubbleDownRawX).roundToInt()
+                        val dy = (event.rawY - bubbleDownRawY).roundToInt()
+                        if (!bubbleMoved && (abs(dx) > dragThreshold || abs(dy) > dragThreshold)) {
+                            bubbleMoved = true
+                        }
+                        if (bubbleMoved) {
+                            params.x = (bubbleStartX + dx).coerceIn(0, maxX)
+                            params.y = (bubbleStartY + dy).coerceIn(0, maxY)
+                            runCatching { windowManager.updateViewLayout(bubble, params) }
+                        }
+                        true
+                    }
+
+                    MotionEvent.ACTION_UP,
+                    MotionEvent.ACTION_CANCEL -> {
+                        if (bubbleMoved) {
+                            saveBubblePosition(params.x, params.y)
+                        } else if (event.actionMasked == MotionEvent.ACTION_UP) {
+                            bubble.performClick()
+                        }
+                        bubbleMoved = false
+                        true
+                    }
+
+                    else -> false
+                }
+            }
+        }
+        return runCatching {
+            windowManager.addView(view, params)
+            bubbleView = view
+            bubbleParams = params
+            saveBubblePosition(params.x, params.y)
+            BetaLogger.log("FloatingNote/Window", "show bubble x=${params.x} y=${params.y}")
+            updateForegroundNotification()
+            true
+        }.getOrElse { error ->
+            BetaLogger.logException("FloatingNote/Window", "bubble_add_failed", error)
+            false
+        }
+    }
+
+    private fun openOverlayFromBubble() {
+        if (overlayView != null) return
+        BetaLogger.log("FloatingNote/Window", "bubble open source=${state.source} target=${state.targetRelativePath.orEmpty()}")
+        removeBubble(updateNotification = false)
+        closingOverlay = false
+        ensureOverlay()
+    }
+
+    private fun hideBubble(reason: String, persistDraft: Boolean = true) {
+        if (persistDraft) {
+            FloatingNoteDraftStore.persistOrClear(this, state)
+        }
+        removeBubble(updateNotification = false)
+        BetaLogger.log("FloatingNote/Window", "hide bubble reason=$reason")
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    private fun removeBubble(updateNotification: Boolean = true) {
+        bubbleView?.let { view ->
+            runCatching { windowManager.removeViewImmediate(view) }
+                .onFailure { error ->
+                    BetaLogger.logException("FloatingNote/Window", "bubble_remove_failed", error)
+                }
+        }
+        bubbleView = null
+        bubbleParams = null
+        if (updateNotification) {
+            updateForegroundNotification()
+        }
+    }
+
+    private fun loadBubblePosition(
+        anchorPosition: FloatingNotePosition?,
+        maxX: Int,
+        maxY: Int,
+    ): FloatingNotePosition {
+        val prefs = getSharedPreferences("QuickDaily", MODE_PRIVATE)
+        if (prefs.contains(PREF_BUBBLE_X) && prefs.contains(PREF_BUBBLE_Y)) {
+            return FloatingNotePosition(
+                prefs.getInt(PREF_BUBBLE_X, 0).coerceIn(0, maxX),
+                prefs.getInt(PREF_BUBBLE_Y, 0).coerceIn(0, maxY),
+            )
+        }
+        val fallbackX = (maxX - dp(16)).coerceAtLeast(0)
+        val fallbackY = (resources.displayMetrics.heightPixels * 0.28f).roundToInt().coerceIn(0, maxY)
+        return FloatingNotePosition(
+            (anchorPosition?.x ?: fallbackX).coerceIn(0, maxX),
+            (anchorPosition?.y ?: fallbackY).coerceIn(0, maxY),
+        )
+    }
+
+    private fun saveBubblePosition(x: Int, y: Int) {
+        getSharedPreferences("QuickDaily", MODE_PRIVATE)
+            .edit()
+            .putInt(PREF_BUBBLE_X, x)
+            .putInt(PREF_BUBBLE_Y, y)
+            .apply()
+    }
+
+    private fun updateForegroundNotification() {
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIFICATION_ID, buildNotification())
+        }
     }
 
     override fun onDestroy() {
@@ -770,6 +976,7 @@ class FloatingNoteService : LifecycleService() {
         }
         overlayView = null
         windowParams = null
+        removeBubble(updateNotification = false)
         isWindowShowing = false
         FloatingNoteLaunchGate.release()
         viewTreeOwner.onDestroy()
@@ -803,8 +1010,8 @@ class FloatingNoteService : LifecycleService() {
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_shortcut_add)
-            .setContentTitle("QuickDaily 速记悬浮窗")
-            .setContentText("悬浮窗正在运行")
+            .setContentTitle(if (overlayView != null) "QuickDaily 速记悬浮窗" else "QuickDaily 速记悬浮球")
+            .setContentText(if (overlayView != null) "悬浮窗正在运行" else "点击悬浮球可立即打开速记窗")
             .setOngoing(true)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -828,6 +1035,8 @@ class FloatingNoteService : LifecycleService() {
     companion object {
         private const val CHANNEL_ID = "floating_note"
         private const val NOTIFICATION_ID = 1702
+        private const val PREF_BUBBLE_X = "floating_note_bubble_x"
+        private const val PREF_BUBBLE_Y = "floating_note_bubble_y"
         private const val ACTION_SHOW = "com.quickdaily.action.FLOATING_NOTE_SHOW"
         private const val ACTION_HIDE = "com.quickdaily.action.FLOATING_NOTE_HIDE"
         private const val ACTION_REFRESH = "com.quickdaily.action.FLOATING_NOTE_REFRESH"
