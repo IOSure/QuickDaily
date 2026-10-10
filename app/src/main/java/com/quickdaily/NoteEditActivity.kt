@@ -1207,7 +1207,7 @@ fun NoteEditDialog(
                 applyTextAction(result, invalidateStamp = false)
             }
             EditorToolbarAction.WIKILINK -> applyTextAction(
-                EditorTextActionPolicy.insert(tfv.text, tfv.selection, "[[")
+                EditorTextActionPolicy.insertWikilink(tfv.text, tfv.selection)
             )
             EditorToolbarAction.TASK,
             EditorToolbarAction.HEADING,

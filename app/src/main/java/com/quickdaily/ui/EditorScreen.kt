@@ -633,7 +633,7 @@ fun EditorScreen(
                                             applyTextAction(result, invalidateStamp = false)
                                         }
                                         EditorToolbarAction.WIKILINK -> applyTextAction(
-                                            EditorTextActionPolicy.insert(textFieldValue.text, textFieldValue.selection, "[[")
+                                            EditorTextActionPolicy.insertWikilink(textFieldValue.text, textFieldValue.selection)
                                         )
                                         EditorToolbarAction.STRIKETHROUGH -> applyTextAction(
                                             EditorTextActionPolicy.toggleDelimiter(textFieldValue.text, textFieldValue.selection, "~~")

@@ -273,7 +273,7 @@ fun EditorToolbarActionIcon(
         EditorToolbarAction.TIMESTAMP -> Icon(Icons.Default.AccessTime, actionDescription, tint = tint, modifier = modifier)
         EditorToolbarAction.DATE_STAMP -> Icon(Icons.Default.Today, actionDescription, tint = tint, modifier = modifier)
         EditorToolbarAction.WIKILINK -> androidx.compose.material3.Text(
-            text = "[[",
+            text = "[[]]",
             color = tint,
             style = MaterialTheme.typography.titleMedium,
             modifier = modifier.semantics { contentDescription = actionDescription },

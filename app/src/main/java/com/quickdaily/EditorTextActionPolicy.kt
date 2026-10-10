@@ -26,6 +26,15 @@ object EditorTextActionPolicy {
         return EditorTextActionResult(output, TextRange(cursor))
     }
 
+    /** Inserts an empty wikilink "[[]]" and places the cursor between the brackets. */
+    fun insertWikilink(text: String, selection: TextRange): EditorTextActionResult {
+        val start = selection.min.coerceIn(0, text.length)
+        val end = selection.max.coerceIn(start, text.length)
+        val output = text.substring(0, start) + "[[]]" + text.substring(end)
+        val cursor = start + 2
+        return EditorTextActionResult(output, TextRange(cursor))
+    }
+
     fun cutLine(text: String, selection: TextRange): EditorTextActionResult {
         val block = selectedBlock(text, selection)
         if (block == null) return EditorTextActionResult(text, selection)

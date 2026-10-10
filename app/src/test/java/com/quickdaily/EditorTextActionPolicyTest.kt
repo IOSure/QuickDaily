@@ -2,6 +2,7 @@ package com.quickdaily
 
 import androidx.compose.ui.text.TextRange
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -64,4 +65,32 @@ class EditorTextActionPolicyTest {
         assertEquals("B\nA\n", EditorTextActionPolicy.moveLineUp("A\nB\n", TextRange(3)).text)
     }
 
+    @Test
+    fun insertWikilinkPlacesCursorBetweenBrackets() {
+        val result = EditorTextActionPolicy.insertWikilink("", TextRange(0))
+        assertEquals("[[]]", result.text)
+        // 光标位于 [[ 和 ]] 之间
+        assertEquals(2, result.selection.start)
+    }
+
+    @Test
+    fun cursorInsideEmptyWikilinkTriggersCompletion() {
+        val result = EditorTextActionPolicy.insertWikilink("", TextRange(0))
+        val trigger = WikilinkPolicy.trigger(result.text, result.selection.start)
+        assertNotNull(trigger)
+        assertEquals(0, trigger?.start)
+        assertEquals(4, trigger?.replaceEnd)
+        assertEquals("", trigger?.query)
+    }
+
+    @Test
+    fun typingInsideBracketsKeepsCompletionActive() {
+        // 模拟在 [[]] 中间输入 P：文本变为 [[P]]，光标在 P 之后
+        val result = EditorTextActionPolicy.insertWikilink("", TextRange(0))
+        val typed = result.text.substring(0, 2) + "P" + result.text.substring(2)
+        val trigger = WikilinkPolicy.trigger(typed, 3)
+        assertNotNull(trigger)
+        assertEquals("P", trigger?.query)
+        assertEquals(5, trigger?.replaceEnd)
+    }
 }

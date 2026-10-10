@@ -11,6 +11,10 @@ data class WikilinkCandidate(
     val displayText: String
         get() = alias ?: targetPath
 
+    /** 文件名（不含目录），用于支持按文件名而不是完整路径做前缀匹配。 */
+    val basename: String
+        get() = targetPath.substringAfterLast('/')
+
     val insertionText: String
         get() = alias?.let { "[[$targetPath|$it]]" } ?: "[[$targetPath]]"
 
@@ -27,10 +31,18 @@ object WikilinkCandidatePolicy {
         limit: Int = DEFAULT_LIMIT,
     ): List<WikilinkCandidate> {
         val prefix = query.trim()
+        if (prefix.isEmpty()) return emptyList()
         return candidates
-            .filter { it.queryText.startsWith(prefix, ignoreCase = true) }
+            .filter {
+                it.queryText.startsWith(prefix, ignoreCase = true) ||
+                    it.basename.startsWith(prefix, ignoreCase = true)
+            }
             .sortedWith(
-                compareBy<WikilinkCandidate> { it.queryText.length }
+                compareBy<WikilinkCandidate> { candidate ->
+                    // 完整路径/别名前缀匹配优先于文件名匹配
+                    if (candidate.queryText.startsWith(prefix, ignoreCase = true)) 0 else 1
+                }
+                    .thenBy { it.queryText.length }
                     .thenBy(String.CASE_INSENSITIVE_ORDER) { it.queryText }
                     .thenBy(String.CASE_INSENSITIVE_ORDER) { it.targetPath }
                     .thenBy(String.CASE_INSENSITIVE_ORDER) { it.alias.orEmpty() },

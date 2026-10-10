@@ -52,4 +52,28 @@ class WikilinkPolicyTest {
         assertEquals(2, result.size)
         assertTrue(result.any { it.insertionText == "[[Page|Alias]]" })
     }
+
+    @Test
+    fun wikilinkCandidatesMatchByBasenameInSubfolders() {
+        val result = WikilinkPolicy.filterWikilinkCandidates(
+            listOf(
+                WikilinkCandidate("Projects/Note"),
+                WikilinkCandidate("Note"),
+                WikilinkCandidate("Other"),
+            ),
+            "No",
+            limit = 5,
+        )
+        // 根目录 Note 完整路径前缀匹配优先，子目录 Projects/Note 按文件名也能匹配到
+        assertEquals(listOf("Note", "Projects/Note"), result.map { it.targetPath })
+    }
+
+    @Test
+    fun wikilinkCandidatesStillMatchFullPathPrefix() {
+        val result = WikilinkPolicy.filterWikilinkCandidates(
+            listOf(WikilinkCandidate("Projects/Note"), WikilinkCandidate("Other")),
+            "Proj",
+        )
+        assertEquals(listOf("Projects/Note"), result.map { it.targetPath })
+    }
 }
