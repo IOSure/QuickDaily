@@ -15,6 +15,8 @@ data class TaskWidgetItem(
     val checked: Boolean,
     val indentLevel: Int,
     val rootLineIndex: Int,
+    val viaQuery: Boolean = false,
+    val type: String = "task",
 )
 
 /** Markdown task parser shared by direct RemoteViews and the legacy service. */

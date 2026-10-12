@@ -18,6 +18,10 @@ import com.quickdaily.util.ContentUtil
 import com.quickdaily.util.DateUtil
 import com.quickdaily.util.FileUtil
 import com.quickdaily.util.ReadResult
+import com.quickdaily.tasks.TasksQueryEngine
+import com.quickdaily.tasks.TasksQueryParser
+import com.quickdaily.tasks.VaultTask
+import com.quickdaily.tasks.VaultTaskScanner
 
 sealed interface WidgetLoadResult<out T> {
     data class Success<T>(val value: T, val sourcePath: String) : WidgetLoadResult<T>
@@ -217,6 +221,9 @@ object WidgetContentLoader {
 
                 val parsed = ContentUtil.parseFrontmatter(fileContent)
                 val body = if (parsed.hasFrontmatter) parsed.body else fileContent
+                if (widgetConfig.scope == TaskWidgetScope.CUSTOM) {
+                    return loadCustomPage(vaultPath, body, path)
+                }
                 val visibleTasks = TaskWidgetTaskParser.parseVisible(body, path, date, showCompleted)
                 tasks += visibleTasks
                 BetaLogger.log(
@@ -230,6 +237,125 @@ object WidgetContentLoader {
         } catch (e: Exception) {
             WidgetLoadResult.Failure("读取失败", exception = e)
         }
+    }
+
+    private fun loadCustomPage(
+        vaultPath: String,
+        body: String,
+        path: String,
+    ): WidgetLoadResult<List<TaskWidgetItem>> {
+        val all = if (vaultPath.isNotBlank()) VaultTaskScanner.getTasks(vaultPath) else emptyList()
+        val items = mutableListOf<TaskWidgetItem>()
+        val lines = body.lines()
+        var i = 0
+        while (i < lines.size) {
+            val line = lines[i]
+            val trimmed = line.trim()
+            val fence = fenceInfo(trimmed)
+            if (fence != null && fence.equals("tasks", ignoreCase = true)) {
+                val fenceChars = trimmed.takeWhile { it == '`' || it == '~' }
+                val sb = StringBuilder()
+                i++
+                while (i < lines.size && !lines[i].trim().startsWith(fenceChars)) {
+                    sb.append(lines[i]).append('\n')
+                    i++
+                }
+                if (i < lines.size) i++
+                appendQueryResult(items, all, sb.toString())
+                items += pageItem("──────────", "separator")
+                continue
+            }
+            parsePageLine(line, path, i)?.let { items += it }
+            i++
+        }
+        if (items.isEmpty()) return WidgetLoadResult.Empty("暂无内容", path)
+        return WidgetLoadResult.Success(items, path)
+    }
+
+    private fun appendQueryResult(items: MutableList<TaskWidgetItem>, all: List<VaultTask>, queryText: String) {
+        val groups = runCatching {
+            TasksQueryEngine.execute(TasksQueryParser.parse(queryText), all)
+        }.getOrElse { emptyList() }
+        var count = 0
+        groups.forEach { group ->
+            if (group.heading != null) {
+                items += pageItem(group.heading, "group")
+            }
+            group.tasks.forEach { task ->
+                count++
+                items += TaskWidgetItem(
+                    text = task.description,
+                    sourcePath = task.path,
+                    date = task.dueDate?.toString(),
+                    lineIndex = task.lineNumber,
+                    rawLine = task.line,
+                    checked = task.isDone,
+                    indentLevel = 0,
+                    rootLineIndex = task.lineNumber,
+                    viaQuery = true,
+                    type = "task",
+                )
+            }
+        }
+        items += pageItem("$count 个任务", "count")
+    }
+
+    private fun parsePageLine(line: String, path: String, lineIndex: Int): TaskWidgetItem? {
+        val trimmed = line.trim()
+        return when {
+            trimmed.isEmpty() -> null
+            trimmed.startsWith("#### ") -> pageItem(trimmed.drop(5).trimStart(), "heading")
+            trimmed.startsWith("### ") -> pageItem(trimmed.drop(4).trimStart(), "heading")
+            trimmed.startsWith("## ") -> pageItem(trimmed.drop(3).trimStart(), "heading")
+            trimmed.startsWith("# ") -> pageItem(trimmed.drop(2).trimStart(), "heading")
+            trimmed.startsWith("- [x]") || trimmed.startsWith("- [X]") ->
+                TaskWidgetItem(
+                    text = trimmed.substringAfter(']').trimStart(),
+                    sourcePath = path,
+                    lineIndex = lineIndex,
+                    rawLine = line,
+                    checked = true,
+                    indentLevel = 0,
+                    rootLineIndex = lineIndex,
+                    type = "task",
+                )
+            trimmed.startsWith("- [ ]") ->
+                TaskWidgetItem(
+                    text = trimmed.substringAfter(']').trimStart(),
+                    sourcePath = path,
+                    lineIndex = lineIndex,
+                    rawLine = line,
+                    checked = false,
+                    indentLevel = 0,
+                    rootLineIndex = lineIndex,
+                    type = "task",
+                )
+            trimmed.startsWith("> ") -> pageItem(trimmed.drop(2).trimStart(), "quote")
+            Regex("^[-*_]{3,}$").matches(trimmed) -> pageItem("──────────", "separator")
+            trimmed.startsWith("- ") -> pageItem(trimmed.drop(2).trimStart(), "bullet")
+            Regex("^\\d+\\.").containsMatchIn(trimmed) -> pageItem(trimmed.dropWhile { it != ' ' }.trimStart(), "bullet")
+            else -> pageItem(trimmed, "plain")
+        }
+    }
+
+    private fun pageItem(text: String, type: String): TaskWidgetItem =
+        TaskWidgetItem(
+            text = text,
+            sourcePath = "",
+            lineIndex = -1,
+            rawLine = "",
+            checked = false,
+            indentLevel = 0,
+            rootLineIndex = -1,
+            type = type,
+        )
+
+    private fun fenceInfo(trimmed: String): String? {
+        if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+            val fence = trimmed.takeWhile { it == '`' || it == '~' }
+            return trimmed.removePrefix(fence).trim()
+        }
+        return null
     }
 
     private fun parseReadLine(line: String): ReadWidgetItem {
@@ -394,41 +520,63 @@ object TaskWidgetViews {
         context: Context,
         item: TaskWidgetItem,
         size: WidgetSize = WidgetSize.DEFAULT
-    ): RemoteViews =
-        RemoteViews(context.packageName, R.layout.widget_task_item).apply {
-            setTextViewText(R.id.task_text, item.text.trim())
-            setFloat(R.id.task_text, "setTextSize", if (size.isTiny) 11f else 12f)
-            val showFullContent = context
-                .getSharedPreferences("QuickDaily", Context.MODE_PRIVATE)
-                .getBoolean(
-                    TaskWidgetDisplayPolicy.SHOW_FULL_CONTENT_PREF_KEY,
-                    TaskWidgetDisplayPolicy.DEFAULT_SHOW_FULL_CONTENT,
+    ): RemoteViews {
+        val colors = WidgetAppearance.colors(context)
+        return when (item.type) {
+            "group" -> simpleLine(context, item.text, colors.foreground, if (size.isTiny) 12f else 13f, 1)
+            "heading" -> simpleLine(context, item.text, colors.foreground, if (size.isTiny) 14f else 15f, 2)
+            "plain" -> simpleLine(context, item.text, colors.foreground, if (size.isTiny) 11f else 12f, 5)
+            "bullet" -> simpleLine(context, "•  ${item.text}", colors.foreground, if (size.isTiny) 11f else 12f, 5)
+            "quote" -> simpleLine(context, "▍ ${item.text}", colors.muted, if (size.isTiny) 11f else 12f, 5)
+            "separator" -> simpleLine(context, item.text.ifBlank { "──────────" }, colors.muted, if (size.isTiny) 10f else 11f, 1)
+            "count" -> simpleLine(context, item.text, colors.muted, if (size.isTiny) 10f else 11f, 1)
+            else -> RemoteViews(context.packageName, R.layout.widget_task_item).apply {
+                setTextViewText(R.id.task_text, item.text.trim())
+                setFloat(R.id.task_text, "setTextSize", if (size.isTiny) 11f else 12f)
+                val showFullContent = context
+                    .getSharedPreferences("QuickDaily", Context.MODE_PRIVATE)
+                    .getBoolean(
+                        TaskWidgetDisplayPolicy.SHOW_FULL_CONTENT_PREF_KEY,
+                        TaskWidgetDisplayPolicy.DEFAULT_SHOW_FULL_CONTENT,
+                    )
+                setInt(
+                    R.id.task_text,
+                    "setMaxLines",
+                    if (showFullContent) Int.MAX_VALUE else size.taskMaxLines,
                 )
-            setInt(
-                R.id.task_text,
-                "setMaxLines",
-                if (showFullContent) Int.MAX_VALUE else size.taskMaxLines,
-            )
-            val colors = WidgetAppearance.colors(context)
-            setTextColor(R.id.task_text, if (item.checked) colors.muted else colors.foreground)
-            setImageViewResource(
-                R.id.task_checkbox,
-                if (item.checked) android.R.drawable.checkbox_on_background
-                else android.R.drawable.checkbox_off_background
-            )
-            setViewPadding(
-                R.id.task_row,
-                (item.indentLevel * WidgetContentLoader.SUBTASK_INDENT_DP * context.resources.displayMetrics.density).toInt(),
-                3,
-                0,
-                3
-            )
-            val fillIntent = Intent().apply {
-                putExtra(TaskWidget.EXTRA_TASK_PATH, item.sourcePath)
-                putExtra(TaskWidget.EXTRA_TASK_LINE, item.lineIndex)
-                putExtra(TaskWidget.EXTRA_TASK_RAW, item.rawLine)
+                setTextColor(R.id.task_text, if (item.checked) colors.muted else colors.foreground)
+                setImageViewResource(
+                    R.id.task_checkbox,
+                    if (item.checked) android.R.drawable.checkbox_on_background
+                    else android.R.drawable.checkbox_off_background
+                )
+                setViewPadding(
+                    R.id.task_row,
+                    (item.indentLevel * WidgetContentLoader.SUBTASK_INDENT_DP * context.resources.displayMetrics.density).toInt(),
+                    3,
+                    0,
+                    3
+                )
+                val fillIntent = Intent().apply {
+                    putExtra(TaskWidget.EXTRA_TASK_PATH, item.sourcePath)
+                    putExtra(TaskWidget.EXTRA_TASK_LINE, item.lineIndex)
+                    putExtra(TaskWidget.EXTRA_TASK_RAW, item.rawLine)
+                    if (item.viaQuery) {
+                        putExtra(TaskWidget.EXTRA_TASK_QUERY, true)
+                        putExtra(TaskWidget.EXTRA_TASK_CHECKED, item.checked)
+                    }
+                }
+                setOnClickFillInIntent(R.id.task_checkbox, fillIntent)
             }
-            setOnClickFillInIntent(R.id.task_checkbox, fillIntent)
+        }
+    }
+
+    private fun simpleLine(context: Context, text: String, color: Int, textSize: Float, maxLines: Int): RemoteViews =
+        RemoteViews(context.packageName, R.layout.widget_diary_read_line).apply {
+            setTextViewText(R.id.task_text, text)
+            setTextColor(R.id.task_text, color)
+            setFloat(R.id.task_text, "setTextSize", textSize)
+            setInt(R.id.task_text, "setMaxLines", maxLines)
         }
 
     @RequiresApi(Build.VERSION_CODES.S)
@@ -439,7 +587,7 @@ object TaskWidgetViews {
     ): RemoteViews.RemoteCollectionItems {
         val builder = RemoteViews.RemoteCollectionItems.Builder()
             .setHasStableIds(false)
-            .setViewTypeCount(1)
+            .setViewTypeCount(3)
         items.forEachIndexed { index, item ->
             builder.addItem(index.toLong(), create(context, item, size))
         }

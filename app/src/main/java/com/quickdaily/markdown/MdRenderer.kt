@@ -1,4 +1,4 @@
-﻿package com.quickdaily.markdown
+package com.quickdaily.markdown
 
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.clickable
@@ -23,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.quickdaily.WidgetContentLoader
+import com.quickdaily.tasks.TasksQueryBlock
 
 // ── Renderer ────────────────────────────────────────────
 
@@ -141,6 +142,9 @@ fun MdRenderer(
                         modifier = Modifier.padding(vertical = 1.dp)
                     )
                 }
+                is MdLine.TasksQuery -> {
+                    TasksQueryBlock(queryText = line.query, vaultPath = vaultBasePath)
+                }
             }
         }
     }
@@ -235,6 +239,7 @@ sealed class MdLine {
     data class Heading(val level: Int, val text: String) : MdLine()
     data class Image(val path: String, val alt: String) : MdLine()
     data class Task(val index: Int, val checked: Boolean, val text: String, val indentLevel: Int = 0) : MdLine()
+    data class TasksQuery(val query: String) : MdLine()
     data class Bullet(val text: String) : MdLine()
     data class Plain(val text: String) : MdLine()
 }
@@ -252,8 +257,24 @@ fun parseLines(markdown: String): List<MdLine> {
     var taskIndex = 0
     val taskIndentStack = ArrayDeque<TaskIndentEntry>()
 
-    for (line in lines) {
+    var i = 0
+    while (i < lines.size) {
+        val line = lines[i]
         val trimmed = line.trim()
+        val fenceInfo = fenceInfo(trimmed)
+        if (fenceInfo != null && fenceInfo.equals("tasks", ignoreCase = true)) {
+            val fence = trimmed.takeWhile { it == '`' || it == '~' }
+            val query = StringBuilder()
+            i++
+            while (i < lines.size && !lines[i].trim().startsWith(fence)) {
+                query.append(lines[i]).append('\n')
+                i++
+            }
+            if (i < lines.size) i++ // 跳过闭合围栏
+            result.add(MdLine.TasksQuery(query.toString()))
+            continue
+        }
+
         when {
             trimmed.isEmpty() -> result.add(MdLine.Blank)
             // 图片行 ![](path) 或 ![alt](path)
@@ -301,8 +322,17 @@ fun parseLines(markdown: String): List<MdLine> {
             // 普通文本
             else -> result.add(MdLine.Plain(trimmed))
         }
+        i++
     }
     return result
+}
+
+private fun fenceInfo(trimmed: String): String? {
+    if (trimmed.startsWith("```") || trimmed.startsWith("~~~")) {
+        val fence = trimmed.takeWhile { it == '`' || it == '~' }
+        return trimmed.removePrefix(fence).trim()
+    }
+    return null
 }
 
 private data class TaskIndentEntry(

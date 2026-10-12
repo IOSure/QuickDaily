@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.Looper
 import android.widget.RemoteViews
 import android.widget.Toast
+import com.quickdaily.tasks.TasksQueryToggleUseCase
 
 class TaskWidget : AppWidgetProvider() {
     override fun onUpdate(
@@ -69,13 +70,19 @@ class TaskWidget : AppWidgetProvider() {
             ACTION_TOGGLE_TASK -> {
                 val path = intent.getStringExtra(EXTRA_TASK_PATH).orEmpty()
                 val lineIndex = intent.getIntExtra(EXTRA_TASK_LINE, -1)
+                val isQuery = intent.getBooleanExtra(EXTRA_TASK_QUERY, false)
+                val wasDone = intent.getBooleanExtra(EXTRA_TASK_CHECKED, false)
                 val expectedRaw = intent.getStringExtra(EXTRA_TASK_RAW).orEmpty()
                 if (path.isNotBlank() && lineIndex >= 0) {
                     val pendingResult = goAsync()
                     WidgetAsyncWorkRunner.launch(
                         finishable = WidgetAsyncFinishable { pendingResult.finish() },
                     ) {
-                        toggleTask(context.applicationContext, path, lineIndex, expectedRaw)
+                        if (isQuery) {
+                            toggleQueryTask(context.applicationContext, path, lineIndex, wasDone)
+                        } else {
+                            toggleTask(context.applicationContext, path, lineIndex, expectedRaw)
+                        }
                     }
                 } else {
                     BetaLogger.log("TaskWidget", "toggle ignored invalid path=$path line=$lineIndex")
@@ -94,6 +101,8 @@ class TaskWidget : AppWidgetProvider() {
         internal const val EXTRA_TASK_PATH = "task_path"
         internal const val EXTRA_TASK_LINE = "task_line"
         internal const val EXTRA_TASK_RAW = "task_raw"
+        internal const val EXTRA_TASK_QUERY = "task_query"
+        internal const val EXTRA_TASK_CHECKED = "task_checked"
         private const val INVALID_WIDGET_ID = -1
 
         fun scheduleMidnightRefresh(context: Context) {
@@ -347,6 +356,27 @@ class TaskWidget : AppWidgetProvider() {
                 runCatching { MediaActionSound().play(MediaActionSound.FOCUS_COMPLETE) }
             }
             WidgetRefreshCoordinator.refreshAll(context, immediate = true)
+        }
+
+        private fun toggleQueryTask(
+            context: Context,
+            relativePath: String,
+            lineIndex: Int,
+            wasDone: Boolean,
+        ) {
+            val vaultPath = context.getSharedPreferences("QuickDaily", 0)
+                .getString("vault_path", "")
+                .orEmpty()
+            val ok = TasksQueryToggleUseCase.toggleByLine(
+                context = context,
+                vaultPath = vaultPath,
+                relativePath = relativePath,
+                lineNumber = lineIndex,
+                isDone = wasDone,
+            )
+            if (!ok) {
+                WidgetRefreshCoordinator.refreshTasks(context, immediate = true)
+            }
         }
     }
 }

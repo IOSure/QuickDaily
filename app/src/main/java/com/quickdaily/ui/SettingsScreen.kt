@@ -634,6 +634,7 @@ fun SettingsScreen(
         dateFormat = dateFormat.trim().ifBlank { "YYYY-MM-DD" },
         templatePath = templatePath.trim(),
         anchorText = anchorText,
+        tasksQuery = currentConfig.tasksQuery,
         timestampFormat = currentConfig.timestampFormat,
         addAnchorIfMissing = currentConfig.addAnchorIfMissing,
         timestampOrder = currentConfig.timestampOrder,
@@ -2006,6 +2007,20 @@ private fun WidgetsTab(
                         )
                     }
                 )
+                HorizontalDivider()
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("悬浮窗任务查询", style = MaterialTheme.typography.bodyMedium)
+                    Text("悬浮窗「任务」视图按 Obsidian-Tasks 查询语法显示结果，留空显示全部任务", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    OutlinedTextField(
+                        value = config.tasksQuery,
+                        onValueChange = { onConfigChange { copy(tasksQuery = it) } },
+                        modifier = Modifier.fillMaxWidth(),
+                        minLines = 3,
+                        maxLines = 8,
+                        placeholder = { Text("例如：not done\ndue before tomorrow\nsort by due") },
+                        textStyle = MaterialTheme.typography.bodySmall,
+                    )
+                }
             }
         }
 

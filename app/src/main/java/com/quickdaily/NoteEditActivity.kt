@@ -24,6 +24,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import com.quickdaily.tasks.TasksQueryBlock
 import androidx.compose.material3.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckBoxOutlineBlank
@@ -990,6 +991,7 @@ fun NoteEditDialog(
     var wikilinkPopupDismissKey by remember { mutableStateOf<String?>(null) }
     var tfv by remember { mutableStateOf(TextFieldValue(text, initialSelection ?: TextRange(text.length))) }
     var stampToggleState by remember { mutableStateOf(EditorStampToggleState()) }
+    var showPreview by remember { mutableStateOf(false) }
     val localUndoStack = remember { mutableStateListOf<String>() }
     val localRedoStack = remember { mutableStateListOf<String>() }
     var lastUndoTime by remember { mutableLongStateOf(0L) }
@@ -1401,10 +1403,16 @@ fun NoteEditDialog(
                                 }
                             }
                         }
-                        Box(
+                        Row(
                             modifier = Modifier.wrapContentWidth(),
-                            contentAlignment = Alignment.CenterEnd,
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            TextButton(onClick = {
+                                if (!showPreview) keyboardController?.hide()
+                                showPreview = !showPreview
+                            }) {
+                                Text(if (showPreview) "编辑" else "任务", color = floater.primary, style = MaterialTheme.typography.labelSmall)
+                            }
                             TextButton(onClick = onTopAction) {
                                 Text(topActionText, color = floater.onBackgroundVariant, style = MaterialTheme.typography.labelSmall)
                             }
@@ -1428,6 +1436,19 @@ fun NoteEditDialog(
 
 
             // ── 内容区（撑满剩余空间，将工具栏推到最下方）──
+            if (showPreview) {
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    TasksQueryBlock(
+                        queryText = neCtx.getSharedPreferences("QuickDaily", 0).getString("tasks_query", "").orEmpty(),
+                        vaultPath = tagVaultPath.takeIf { it.isNotBlank() },
+                    )
+                }
+            } else {
             Column(
                 Modifier
                     .weight(1f)
@@ -1701,6 +1722,7 @@ fun NoteEditDialog(
                     Text("保存", color = floater.primary, style = MaterialTheme.typography.labelMedium)
                 }
             } // end toolbar Row
+            }
         }
 
         if (targetMenuExpanded && useInlineTargetMenu) {
